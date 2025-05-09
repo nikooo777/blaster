@@ -120,21 +120,32 @@ func (this *ServerQuerier) a2s_info(info *ServerInfo) error {
 		return err
 	}
 
-	switch data[4] {
-	case S2C_CHALLENGE:
-		// The newer protocol requires A2S_INFO requests to contain a challenge,
-		// servers that expected a challenge will have sent us a S2C_CHALLENGE response instead.
-		// Re-send the query with the challenge we received.
-		packet.WriteBytes([]byte{
-			data[5], data[6], data[7], data[8],
-		})
-		if err := this.socket.Send(packet.Bytes()); err != nil {
-			return err
-		}
+outer:
+	for i := 0; i < 7; i++ {
+		//fmt.Println("(re)trying a2s...")
+		switch data[4] {
+		case S2C_CHALLENGE:
+			// The newer protocol requires A2S_INFO requests to contain a challenge,
+			// servers that expected a challenge will have sent us a S2C_CHALLENGE response instead.
+			// Re-send the query with the challenge we received.
 
-		data, err = this.socket.Recv()
-		if err != nil {
-			return err
+			//in some instances, the server will submit more than 1 challenge in a row. it's important to reply to all of them
+			packet.Reset()
+			packet.WriteBytes([]byte{0xff, 0xff, 0xff, 0xff, A2S_INFO})
+			packet.WriteCString("Source Engine Query")
+			packet.WriteBytes([]byte{
+				data[5], data[6], data[7], data[8],
+			})
+			if err := this.socket.Send(packet.Bytes()); err != nil {
+				return err
+			}
+
+			data, err = this.socket.Recv()
+			if err != nil {
+				return err
+			}
+		default:
+			break outer
 		}
 	}
 
@@ -392,6 +403,48 @@ func (this *ServerQuerier) a2s_rules() ([]byte, error) {
 	return this.socket.Recv()
 }
 
+func (this *ServerQuerier) a2s_players() ([]byte, error) {
+	// Initial A2S_PLAYER query packet without a challenge
+	data := []byte{0xff, 0xff, 0xff, 0xff, A2S_PLAYER, 0xff, 0xff, 0xff, 0xff}
+	if err := this.socket.Send(data); err != nil {
+		return nil, err
+	}
+
+	// Receive the initial response
+	response, err := this.socket.Recv()
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if the response header is valid
+	if len(response) < 5 || int32(binary.LittleEndian.Uint32(response[0:4])) != -1 {
+		return nil, ErrBadPacketHeader
+	}
+
+	// Handle challenge response if received
+	if response[4] == S2C_CHALLENGE {
+		// Extract the challenge number from the response (bytes 5-8)
+		challenge := response[5:9]
+
+		// Resend the query with the challenge
+		packet := PacketBuilder{}
+		packet.WriteBytes([]byte{0xff, 0xff, 0xff, 0xff, A2S_PLAYER})
+		packet.WriteBytes(challenge)
+		if err := this.socket.Send(packet.Bytes()); err != nil {
+			return nil, err
+		}
+
+		// Receive the final response
+		response, err = this.socket.Recv()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Return the response data for further processing
+	return response, nil
+}
+
 type MultiPacketHeader struct {
 	// Size of the packet header itself.
 	Size int
@@ -542,4 +595,84 @@ func (this *ServerQuerier) processRules(data []byte, compressed bool) (map[strin
 	}
 
 	return rules, nil
+}
+
+type Player struct {
+	Id             uint8         `json:"id"`
+	Name           string        `json:"name"`
+	Score          int32         `json:"score"`
+	ConnectionTime time.Duration `json:"connection_time"`
+}
+
+// QueryPlayers sends an A2S_PLAYER query to the CS:S server and returns a list of connected players.
+// If server info is not yet fetched, it automatically calls QueryInfo() first.
+func (this *ServerQuerier) QueryPlayers() ([]Player, error) {
+	// Automatically fetch server info if not already present
+	if this.info == nil {
+		info, err := this.QueryInfo()
+		if err != nil {
+			return nil, fmt.Errorf("failed to auto-fetch server info: %v", err)
+		}
+		this.info = info // Ensure subsequent calls use the fetched info
+	}
+
+	var players []Player
+	err := Try(func() error {
+		// Get the raw response from a2s_players
+		data, err := this.a2s_players()
+		if err != nil {
+			return err
+		}
+
+		// Check the packet header to determine if it's single or multi-packet
+		switch int32(binary.LittleEndian.Uint32(data[0:4])) {
+		case -1:
+			// Single packet reply
+			return this.parsePlayerReply(data, &players)
+		case -2:
+			// Multi-packet reply
+			fullData, compressed, err := this.waitForMultiPacketReply(data)
+			if err != nil {
+				return err
+			}
+			if compressed {
+				return errors.New("compressed A2S_PLAYER responses are not supported")
+			}
+			return this.parsePlayerReply(fullData, &players)
+		default:
+			return ErrBadPacketHeader
+		}
+	})
+
+	return players, err
+}
+
+// parsePlayerReply parses the A2S_PLAYER response data into a slice of Player structs for Source engine (CS:S).
+func (this *ServerQuerier) parsePlayerReply(data []byte, players *[]Player) error {
+	reader := NewPacketReader(data)
+
+	// Validate header and response type
+	if reader.ReadInt32() != -1 {
+		return ErrBadPacketHeader
+	}
+	if reader.ReadUint8() != S2A_PLAYER {
+		return errors.New("unexpected response type, expected S2A_PLAYER")
+	}
+
+	// Read number of players
+	numPlayers := reader.ReadUint8()
+	*players = make([]Player, numPlayers)
+
+	// Parse each player's data (Source engine format)
+	for i := 0; i < int(numPlayers); i++ {
+		player := &(*players)[i]
+		player.Id = reader.ReadUint8() //this seems to always return 0
+		player.Id = uint8(i)
+		player.Name = reader.ReadString()
+		player.Score = reader.ReadInt32() // 4-byte integer for Source engine
+		playerTimeSeconds := reader.ReadFloat32()
+		player.ConnectionTime = time.Duration(playerTimeSeconds) * time.Second
+	}
+
+	return nil
 }

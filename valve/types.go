@@ -80,6 +80,7 @@ func (this ServerOS) String() string {
 
 // OOB request packet types.
 const A2S_INFO uint8 = 0x54
+const A2S_PLAYER uint8 = 0x55
 const A2S_RULES uint8 = 0x56
 
 // Official versions of the A2S_INFO reply.
