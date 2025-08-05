@@ -649,6 +649,9 @@ func (this *ServerQuerier) QueryPlayers() ([]Player, error) {
 
 // parsePlayerReply parses the A2S_PLAYER response data into a slice of Player structs for Source engine (CS:S).
 func (this *ServerQuerier) parsePlayerReply(data []byte, players *[]Player) error {
+	if len(data) < 6 {
+		return errors.New("data too short for player response")
+	}
 	reader := NewPacketReader(data)
 
 	// Validate header and response type
