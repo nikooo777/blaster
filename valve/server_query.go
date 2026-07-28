@@ -674,7 +674,7 @@ func (this *ServerQuerier) parsePlayerReply(data []byte, players *[]Player) erro
 		player.Name = reader.ReadString()
 		player.Score = reader.ReadInt32() // 4-byte integer for Source engine
 		playerTimeSeconds := reader.ReadFloat32()
-		player.ConnectionTime = time.Duration(playerTimeSeconds) * time.Second
+		player.ConnectionTime = time.Duration(float64(playerTimeSeconds) * float64(time.Second))
 	}
 
 	return nil
