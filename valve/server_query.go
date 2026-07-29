@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"time"
 )
 
@@ -27,6 +28,79 @@ var ErrConfusedChallengeReply = errors.New("challenge reply is for the wrong que
 var ErrBadRulesReply = errors.New("bad rules reply")
 var ErrWrongBz2Size = errors.New("bad bz2 decompression size")
 var ErrWrongBz2Checksum = errors.New("bad bz2 checksum")
+var ErrInvalidRulesQueryLimits = errors.New("invalid rules query limits")
+var ErrRulesPacketLimit = errors.New("rules packet limit exceeded")
+var ErrRulesPayloadLimit = errors.New("rules payload limit exceeded")
+var ErrRulesCountLimit = errors.New("rules count limit exceeded")
+var ErrRulesStringLimit = errors.New("rules string limit exceeded")
+var ErrDuplicateRule = errors.New("duplicate rule")
+var ErrTruncatedRulesReply = errors.New("truncated rules reply")
+var ErrTrailingRulesData = errors.New("trailing rules data")
+var ErrMismatchedPacket = errors.New("mismatched split packet")
+
+const (
+	defaultRulesTotalTimeout         = 5 * time.Second
+	defaultRulesMaxPackets           = 32
+	defaultRulesMaxPayloadBytes      = 64 * 1024
+	defaultRulesMaxDecompressedBytes = 64 * 1024
+	defaultRulesMaxRules             = 512
+	defaultRulesMaxKeyBytes          = 256
+	defaultRulesMaxValueBytes        = 4 * 1024
+	hardRulesMaxTotalTimeout         = 30 * time.Second
+	hardRulesMaxPackets              = 64
+	hardRulesMaxPayloadBytes         = 1024 * 1024
+	hardRulesMaxDecompressedBytes    = 1024 * 1024
+	hardRulesMaxRules                = 4096
+	hardRulesMaxKeyBytes             = 1024
+	hardRulesMaxValueBytes           = 64 * 1024
+)
+
+type RulesQueryLimits struct {
+	TotalTimeout         time.Duration
+	MaxPackets           int
+	MaxPayloadBytes      int
+	MaxDecompressedBytes int
+	MaxRules             int
+	MaxKeyBytes          int
+	MaxValueBytes        int
+}
+
+func DefaultRulesQueryLimits(timeout time.Duration) RulesQueryLimits {
+	if timeout <= 0 {
+		timeout = defaultRulesTotalTimeout
+	} else if timeout > hardRulesMaxTotalTimeout {
+		timeout = hardRulesMaxTotalTimeout
+	}
+	return RulesQueryLimits{
+		TotalTimeout:         timeout,
+		MaxPackets:           defaultRulesMaxPackets,
+		MaxPayloadBytes:      defaultRulesMaxPayloadBytes,
+		MaxDecompressedBytes: defaultRulesMaxDecompressedBytes,
+		MaxRules:             defaultRulesMaxRules,
+		MaxKeyBytes:          defaultRulesMaxKeyBytes,
+		MaxValueBytes:        defaultRulesMaxValueBytes,
+	}
+}
+
+func validateRulesQueryLimits(limits RulesQueryLimits) error {
+	if limits.TotalTimeout <= 0 ||
+		limits.TotalTimeout > hardRulesMaxTotalTimeout ||
+		limits.MaxPackets <= 0 ||
+		limits.MaxPackets > hardRulesMaxPackets ||
+		limits.MaxPayloadBytes <= 0 ||
+		limits.MaxPayloadBytes > hardRulesMaxPayloadBytes ||
+		limits.MaxDecompressedBytes <= 0 ||
+		limits.MaxDecompressedBytes > hardRulesMaxDecompressedBytes ||
+		limits.MaxRules <= 0 ||
+		limits.MaxRules > hardRulesMaxRules ||
+		limits.MaxKeyBytes <= 0 ||
+		limits.MaxKeyBytes > hardRulesMaxKeyBytes ||
+		limits.MaxValueBytes <= 0 ||
+		limits.MaxValueBytes > hardRulesMaxValueBytes {
+		return ErrInvalidRulesQueryLimits
+	}
+	return nil
+}
 
 // Always import fmt for debugging.
 var _ = fmt.Println
@@ -309,20 +383,33 @@ func (this *ServerQuerier) parseOldInfo(reader *PacketReader, info *ServerInfo) 
 // Send an A2S_RULES query to the server. This returns a mapping of cvar names
 // to values.
 func (this *ServerQuerier) QueryRules() (map[string]string, error) {
-	var rules map[string]string
-	var err error
+	return this.QueryRulesWithLimits(DefaultRulesQueryLimits(this.timeout))
+}
 
-	// Note: must assign |err| in case there's a panic.
+func (this *ServerQuerier) QueryRulesWithLimits(
+	limits RulesQueryLimits,
+) (map[string]string, error) {
+	err := validateRulesQueryLimits(limits)
+	if err != nil {
+		return nil, err
+	}
+	err = this.socket.setAbsoluteDeadline(time.Now().Add(limits.TotalTimeout))
+	if err != nil {
+		return nil, err
+	}
+	defer this.socket.clearAbsoluteDeadline()
+
+	var rules map[string]string
 	err = Try(func() error {
-		rules, err = this.queryRules()
+		rules, err = this.queryRules(limits)
 		return err
 	})
-
 	return rules, err
 }
 
-func (this *ServerQuerier) queryRules() (map[string]string, error) {
-	// Try to get a successful challenge.
+func (this *ServerQuerier) queryRules(
+	limits RulesQueryLimits,
+) (map[string]string, error) {
 	rechallenges := 0
 	data, err := this.a2s_rules()
 	for err == ErrConfusedChallengeReply && rechallenges < 3 {
@@ -330,20 +417,28 @@ func (this *ServerQuerier) queryRules() (map[string]string, error) {
 		rechallenges++
 	}
 
-	// Challenge failed - abort.
 	if err != nil {
 		return nil, err
+	}
+	if len(data) < 4 {
+		return nil, ErrBadPacketHeader
 	}
 
 	switch int32(binary.LittleEndian.Uint32(data)) {
 	case -1:
-		return this.processRules(data, false)
+		return this.processRules(data, false, limits)
 	case -2:
-		full, compressed, err := this.waitForMultiPacketReply(data)
+		full, compressed, err := this.waitForMultiPacketReplyWithLimits(
+			data,
+			multiPacketLimits{
+				maxPackets:      limits.MaxPackets,
+				maxPayloadBytes: limits.MaxPayloadBytes,
+			},
+		)
 		if err != nil {
 			return nil, err
 		}
-		return this.processRules(full, compressed)
+		return this.processRules(full, compressed, limits)
 	default:
 		return nil, ErrBadPacketHeader
 	}
@@ -363,6 +458,9 @@ func (this *ServerQuerier) a2s_rules() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(data) < 5 {
+		return nil, ErrBadPacketHeader
+	}
 
 	switch int32(binary.LittleEndian.Uint32(data[0:4])) {
 	case -2:
@@ -373,22 +471,21 @@ func (this *ServerQuerier) a2s_rules() ([]byte, error) {
 	case -1:
 		// Ok, continue.
 	default:
-		panic(ErrBadPacketHeader)
+		return nil, ErrBadPacketHeader
 	}
 
 	switch data[4] {
 	case S2A_RULES:
-		// Some servers report an immediate, very truncated A2S_RULES reply.
-		// It's not clear why - either a bug or some sort of information
-		// hiding tactic, but we support this anyway.
 		return data, nil
 	case S2A_INFO_SOURCE, S2A_PLAYER:
 		// Some servers reply with the wrong kind of query. For these, we retry.
 		return nil, ErrConfusedChallengeReply
 	case S2C_CHALLENGE:
-		// Ok, continue.
+		if len(data) < 9 {
+			return nil, ErrBadChallengeResponse
+		}
 	default:
-		panic(ErrBadChallengeResponse)
+		return nil, ErrBadChallengeResponse
 	}
 
 	// Send the rules query now that we've got a challenge sequence.
@@ -467,13 +564,23 @@ type MultiPacketHeader struct {
 	Payload []byte
 }
 
-func (this *ServerQuerier) decodeMultiPacketHeader(data []byte) *MultiPacketHeader {
+type multiPacketLimits struct {
+	maxPackets      int
+	maxPayloadBytes int
+}
+
+func (this *ServerQuerier) decodeMultiPacketHeader(
+	data []byte,
+) (*MultiPacketHeader, error) {
+	if len(data) < 8 {
+		return nil, ErrBadPacketHeader
+	}
 	reader := NewPacketReader(data)
 	if reader.ReadInt32() != -2 {
-		panic(ErrBadPacketHeader)
+		return nil, ErrBadPacketHeader
 	}
 	if this.info == nil {
-		panic(ErrUnknownGameEngine)
+		return nil, ErrUnknownGameEngine
 	}
 
 	header := &MultiPacketHeader{}
@@ -481,41 +588,85 @@ func (this *ServerQuerier) decodeMultiPacketHeader(data []byte) *MultiPacketHead
 
 	switch this.info.GameEngine() {
 	case GOLDSRC:
+		if len(data) < 9 {
+			return nil, ErrBadPacketHeader
+		}
 		pkt := reader.ReadUint8()
 		header.PacketNumber = (pkt >> 4) & 0xf
 		header.TotalPackets = (pkt & 0xf)
 
 	case SOURCE:
+		if len(data) < 10 {
+			return nil, ErrBadPacketHeader
+		}
 		header.Compressed = (header.Id & uint32(0x80000000)) != 0
 		header.TotalPackets = reader.ReadUint8()
 		header.PacketNumber = reader.ReadUint8()
 		if !this.info.IsPreOrangeBox() {
+			if len(data) < 12 {
+				return nil, ErrBadPacketHeader
+			}
 			header.PacketSize = reader.ReadUint16()
 		}
 
 	default:
-		panic(ErrUnknownGameEngine)
+		return nil, ErrUnknownGameEngine
 	}
 
 	header.Size = reader.Pos()
 	header.Payload = data[header.Size:]
-	return header
+	return header, nil
 }
 
 func (this *ServerQuerier) waitForMultiPacketReply(data []byte) ([]byte, bool, error) {
-	header := this.decodeMultiPacketHeader(data)
+	return this.waitForMultiPacketReplyWithLimits(
+		data,
+		multiPacketLimits{
+			maxPackets:      255,
+			maxPayloadBytes: kMaxPacketSize * 255,
+		},
+	)
+}
+
+func (this *ServerQuerier) waitForMultiPacketReplyWithLimits(
+	data []byte,
+	limits multiPacketLimits,
+) ([]byte, bool, error) {
+	header, err := this.decodeMultiPacketHeader(data)
+	if err != nil {
+		return nil, false, err
+	}
+	if header.TotalPackets == 0 {
+		return nil, false, ErrBadPacketNumber
+	}
+	if int(header.TotalPackets) > limits.maxPackets {
+		return nil, false, ErrRulesPacketLimit
+	}
+	expectedID := header.Id
+	expectedTotalPackets := header.TotalPackets
+	expectedCompressed := header.Compressed
+	expectedPacketSize := header.PacketSize
 	packets := make([]*MultiPacketHeader, header.TotalPackets)
 	received := 0
 	fullSize := 0
 
 	for {
+		if header.Id != expectedID ||
+			header.TotalPackets != expectedTotalPackets ||
+			header.Compressed != expectedCompressed ||
+			header.PacketSize != expectedPacketSize {
+			return nil, false, ErrMismatchedPacket
+		}
 		if int(header.PacketNumber) >= len(packets) {
-			panic(ErrBadPacketNumber)
+			return nil, false, ErrBadPacketNumber
 		}
 		if packets[header.PacketNumber] != nil {
-			panic(ErrDuplicatePacket)
+			return nil, false, ErrDuplicatePacket
 		}
 
+		if len(header.Payload) > limits.maxPayloadBytes-fullSize {
+			return nil, false, ErrRulesPayloadLimit
+		}
 		packets[header.PacketNumber] = header
 		fullSize += len(header.Payload)
 		received++
@@ -529,7 +680,10 @@ func (this *ServerQuerier) waitForMultiPacketReply(data []byte) ([]byte, bool, e
 			return nil, false, err
 		}
 
-		header = this.decodeMultiPacketHeader(data)
+		header, err = this.decodeMultiPacketHeader(data)
+		if err != nil {
+			return nil, false, err
+		}
 	}
 
 	payload := make([]byte, fullSize)
@@ -542,25 +696,35 @@ func (this *ServerQuerier) waitForMultiPacketReply(data []byte) ([]byte, bool, e
 	return payload, packets[0].Compressed, nil
 }
 
-func (this *ServerQuerier) processRules(data []byte, compressed bool) (map[string]string, error) {
+func (this *ServerQuerier) processRules(
+	data []byte,
+	compressed bool,
+	limits RulesQueryLimits,
+) (map[string]string, error) {
+	if len(data) > limits.MaxPayloadBytes {
+		return nil, ErrRulesPayloadLimit
+	}
 	reader := NewPacketReader(data)
 
 	if compressed {
+		if len(data) < 8 {
+			return nil, ErrTruncatedRulesReply
+		}
 		decompressedSize := reader.ReadUint32()
 		checksum := reader.ReadUint32()
-
-		// Sanity check so we don't allocate and zero 3GB of memory by accident.
-		if decompressedSize > uint32(1024*1024) {
+		if decompressedSize > uint32(limits.MaxDecompressedBytes) {
 			return nil, ErrWrongBz2Size
 		}
 
-		decompressed := make([]byte, decompressedSize)
 		bz2Reader := bzip2.NewReader(bytes.NewReader(data[reader.Pos():]))
-		n, err := bz2Reader.Read(decompressed)
+		decompressed, err := io.ReadAll(io.LimitReader(
+			bz2Reader,
+			int64(decompressedSize)+1,
+		))
 		if err != nil {
 			return nil, err
 		}
-		if n != int(decompressedSize) {
+		if len(decompressed) != int(decompressedSize) {
 			return nil, ErrWrongBz2Size
 		}
 		if crc32.ChecksumIEEE(decompressed) != checksum {
@@ -572,29 +736,58 @@ func (this *ServerQuerier) processRules(data []byte, compressed bool) (map[strin
 		reader = NewPacketReader(data)
 	}
 
+	if len(data) < 7 {
+		return nil, ErrTruncatedRulesReply
+	}
 	if reader.ReadInt32() != -1 {
-		panic(ErrBadPacketHeader)
+		return nil, ErrBadPacketHeader
 	}
 	if reader.ReadUint8() != S2A_RULES {
-		panic(ErrBadRulesReply)
+		return nil, ErrBadRulesReply
 	}
 
 	count := int(reader.ReadUint16())
+	if count > limits.MaxRules {
+		return nil, ErrRulesCountLimit
+	}
 
-	rules := map[string]string{}
+	rules := make(map[string]string, count)
 	for i := 0; i < count; i++ {
-		key, ok := reader.TryReadString()
-		if !ok {
-			break
+		key, err := readBoundedRuleString(reader, limits.MaxKeyBytes)
+		if err != nil {
+			return nil, err
 		}
-		val, ok := reader.TryReadString()
-		if !ok {
-			break
+		value, err := readBoundedRuleString(reader, limits.MaxValueBytes)
+		if err != nil {
+			return nil, err
 		}
-		rules[key] = val
+		if _, exists := rules[key]; exists {
+			return nil, fmt.Errorf("%w: %q", ErrDuplicateRule, key)
+		}
+		rules[key] = value
+	}
+	if reader.More() {
+		return nil, ErrTrailingRulesData
 	}
 
 	return rules, nil
+}
+
+func readBoundedRuleString(
+	reader *PacketReader,
+	maxBytes int,
+) (string, error) {
+	remaining := reader.buffer[reader.pos:]
+	end := bytes.IndexByte(remaining, 0)
+	if end < 0 {
+		return "", ErrTruncatedRulesReply
+	}
+	if end > maxBytes {
+		return "", ErrRulesStringLimit
+	}
+	value := string(remaining[:end])
+	reader.pos += end + 1
+	return value, nil
 }
 
 type Player struct {

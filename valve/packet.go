@@ -154,11 +154,12 @@ func (this *PacketReader) More() bool {
 }
 
 type UdpSocket struct {
-	timeout time.Duration
-	cn      net.Conn
-	buffer  [kMaxPacketSize]byte
-	wait    time.Duration
-	next    time.Time
+	timeout          time.Duration
+	cn               net.Conn
+	buffer           [kMaxPacketSize]byte
+	wait             time.Duration
+	next             time.Time
+	absoluteDeadline time.Time
 }
 
 func NewUdpSocket(address string, timeout time.Duration) (*UdpSocket, error) {
@@ -186,7 +187,33 @@ func (this *UdpSocket) SetRateLimit(ratePerMinute int) {
 }
 
 func (this *UdpSocket) extendedDeadline() time.Time {
-	return time.Now().Add(this.timeout)
+	deadline := this.absoluteDeadline
+	if this.timeout <= 0 {
+		return deadline
+	}
+	timeoutDeadline := time.Now().Add(this.timeout)
+	if deadline.IsZero() || timeoutDeadline.Before(deadline) {
+		return timeoutDeadline
+	}
+	return deadline
+}
+
+func (this *UdpSocket) setAbsoluteDeadline(deadline time.Time) error {
+	err := this.cn.SetDeadline(deadline)
+	if err != nil {
+		return err
+	}
+	this.absoluteDeadline = deadline
+	return nil
+}
+
+func (this *UdpSocket) clearAbsoluteDeadline() error {
+	err := this.cn.SetDeadline(time.Time{})
+	if err != nil {
+		return err
+	}
+	this.absoluteDeadline = time.Time{}
+	return nil
 }
 
 func (this *UdpSocket) enforceRateLimit() {
@@ -210,12 +237,14 @@ func (this *UdpSocket) Send(bytes []byte) error {
 	this.enforceRateLimit()
 	defer this.setNextQueryTime()
 
-	// Set timeout.
-	if this.timeout > 0 {
-		this.cn.SetWriteDeadline(this.extendedDeadline())
+	deadline := this.extendedDeadline()
+	if !deadline.IsZero() {
+		err := this.cn.SetWriteDeadline(deadline)
+		if err != nil {
+			return err
+		}
 	}
 
-	// UDP is all or nothing.
 	_, err := this.cn.Write(bytes)
 	return err
 }
@@ -223,9 +252,12 @@ func (this *UdpSocket) Send(bytes []byte) error {
 func (this *UdpSocket) Recv() ([]byte, error) {
 	defer this.setNextQueryTime()
 
-	// Set timeout.
-	if this.timeout > 0 {
-		this.cn.SetReadDeadline(this.extendedDeadline())
+	deadline := this.extendedDeadline()
+	if !deadline.IsZero() {
+		err := this.cn.SetReadDeadline(deadline)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	n, err := this.cn.Read(this.buffer[0:kMaxPacketSize])
