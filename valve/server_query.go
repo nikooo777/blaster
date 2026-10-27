@@ -53,6 +53,7 @@ const (
 	hardRulesMaxRules                = 4096
 	hardRulesMaxKeyBytes             = 1024
 	hardRulesMaxValueBytes           = 64 * 1024
+	maxInfoChallenges                = 7
 )
 
 type RulesQueryLimits struct {
@@ -101,9 +102,6 @@ func validateRulesQueryLimits(limits RulesQueryLimits) error {
 	}
 	return nil
 }
-
-// Always import fmt for debugging.
-var _ = fmt.Println
 
 // A ServerQuerier is used to issue A2S queries against an HL1/HL2 server.
 type ServerQuerier struct {
@@ -194,32 +192,29 @@ func (this *ServerQuerier) a2s_info(info *ServerInfo) error {
 		return err
 	}
 
-outer:
-	for i := 0; i < 7; i++ {
-		//fmt.Println("(re)trying a2s...")
-		switch data[4] {
-		case S2C_CHALLENGE:
-			// The newer protocol requires A2S_INFO requests to contain a challenge,
-			// servers that expected a challenge will have sent us a S2C_CHALLENGE response instead.
-			// Re-send the query with the challenge we received.
+	// The newer protocol requires A2S_INFO requests to contain a challenge,
+	// servers that expected a challenge will have sent us a S2C_CHALLENGE response instead.
+	// Some servers send several challenges in a row, so re-send the query with each one.
+	for range maxInfoChallenges {
+		if len(data) < 5 || data[4] != S2C_CHALLENGE {
+			break
+		}
+		if len(data) < 9 {
+			return ErrBadChallengeResponse
+		}
 
-			//in some instances, the server will submit more than 1 challenge in a row. it's important to reply to all of them
-			packet.Reset()
-			packet.WriteBytes([]byte{0xff, 0xff, 0xff, 0xff, A2S_INFO})
-			packet.WriteCString("Source Engine Query")
-			packet.WriteBytes([]byte{
-				data[5], data[6], data[7], data[8],
-			})
-			if err := this.socket.Send(packet.Bytes()); err != nil {
-				return err
-			}
+		packet.Reset()
+		packet.WriteBytes([]byte{0xff, 0xff, 0xff, 0xff, A2S_INFO})
+		packet.WriteCString("Source Engine Query")
+		packet.WriteBytes(data[5:9])
+		err = this.socket.Send(packet.Bytes())
+		if err != nil {
+			return err
+		}
 
-			data, err = this.socket.Recv()
-			if err != nil {
-				return err
-			}
-		default:
-			break outer
+		data, err = this.socket.Recv()
+		if err != nil {
+			return err
 		}
 	}
 
@@ -520,6 +515,10 @@ func (this *ServerQuerier) a2s_players() ([]byte, error) {
 
 	// Handle challenge response if received
 	if response[4] == S2C_CHALLENGE {
+		if len(response) < 9 {
+			return nil, ErrBadChallengeResponse
+		}
+
 		// Extract the challenge number from the response (bytes 5-8)
 		challenge := response[5:9]
 
@@ -752,7 +751,7 @@ func (this *ServerQuerier) processRules(
 	}
 
 	rules := make(map[string]string, count)
-	for i := 0; i < count; i++ {
+	for range count {
 		key, err := readBoundedRuleString(reader, limits.MaxKeyBytes)
 		if err != nil {
 			return nil, err
@@ -802,11 +801,10 @@ type Player struct {
 func (this *ServerQuerier) QueryPlayers() ([]Player, error) {
 	// Automatically fetch server info if not already present
 	if this.info == nil {
-		info, err := this.QueryInfo()
+		_, err := this.QueryInfo()
 		if err != nil {
-			return nil, fmt.Errorf("failed to auto-fetch server info: %v", err)
+			return nil, fmt.Errorf("failed to auto-fetch server info: %w", err)
 		}
-		this.info = info // Ensure subsequent calls use the fetched info
 	}
 
 	var players []Player
@@ -815,6 +813,9 @@ func (this *ServerQuerier) QueryPlayers() ([]Player, error) {
 		data, err := this.a2s_players()
 		if err != nil {
 			return err
+		}
+		if len(data) < 4 {
+			return ErrBadPacketHeader
 		}
 
 		// Check the packet header to determine if it's single or multi-packet
@@ -862,7 +863,7 @@ func (this *ServerQuerier) parsePlayerReply(data []byte, players *[]Player) erro
 	// Parse each player's data (Source engine format)
 	for i := 0; i < int(numPlayers); i++ {
 		player := &(*players)[i]
-		player.Id = reader.ReadUint8() //this seems to always return 0
+		reader.ReadUint8() // The wire index is always 0, so use the position instead.
 		player.Id = uint8(i)
 		player.Name = reader.ReadString()
 		player.Score = reader.ReadInt32() // 4-byte integer for Source engine

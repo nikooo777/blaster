@@ -7,12 +7,12 @@ package batch
 
 // A batch is a list of arbitrary items.
 type Batch interface {
-	Item(index int) interface{}
+	Item(index int) any
 	Len() int
 }
 
 // Callback function to process items.
-type Callback func(item interface{})
+type Callback func(item any)
 
 // A batch processor feeds items into a goroutine for processing.
 type BatchProcessor struct {
@@ -26,8 +26,8 @@ type BatchProcessor struct {
 	stopped        bool
 
 	// These are only modified from the process goroutine.
-	worklist    []interface{} // Pending items to create tasks for.
-	outstanding int           // Number of remaining tasks we're waiting on.
+	worklist    []any // Pending items to create tasks for.
+	outstanding int   // Number of remaining tasks we're waiting on.
 }
 
 // Create a new batch processor.
@@ -90,11 +90,11 @@ func (this *BatchProcessor) send_stop(terminate bool) {
 }
 
 // This must only be invoked from enqueueBatch() or waitForBatches().
-func (this *BatchProcessor) enqueueItem(item interface{}) {
+func (this *BatchProcessor) enqueueItem(item any) {
 	this.outstanding++
 
 	// Avoid entraining local state by passing everything through the closure.
-	go (func(callback Callback, taskDone chan bool, item interface{}) {
+	go (func(callback Callback, taskDone chan bool, item any) {
 		defer (func() {
 			taskDone <- true
 		})()

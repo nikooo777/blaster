@@ -18,7 +18,7 @@ func (this ServerList) Len() int {
 }
 
 // Implements Batch.Item().
-func (this ServerList) Item(index int) interface{} {
+func (this ServerList) Item(index int) any {
 	return this[index]
 }
 

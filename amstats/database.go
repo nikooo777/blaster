@@ -77,20 +77,20 @@ func getDatabase(config *yaml.File, key string) *Database {
 	return db
 }
 
-func (this *Database) Select(holder interface{}, query string, bindings ...interface{}) {
+func (this *Database) Select(holder any, query string, bindings ...any) {
 	_, err := this.DbMap.Select(holder, query, bindings...)
 	if err != nil {
 		panic(err)
 	}
 }
 
-func (this *Database) Insert(holder interface{}) {
+func (this *Database) Insert(holder any) {
 	if err := this.DbMap.Insert(holder); err != nil {
 		panic(err)
 	}
 }
 
-func (this *Database) Exec(query string, bindings ...interface{}) {
+func (this *Database) Exec(query string, bindings ...any) {
 	_, err := this.DbMap.Exec(query, bindings...)
 	if err != nil {
 		panic(err)

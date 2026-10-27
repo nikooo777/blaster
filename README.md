@@ -1,11 +1,11 @@
 blaster
 =======
 
-Blaster is a tool for querying servers from the Valve Master Server List. There are three components: a set of libraries for querying Valve protocols (which have many edge cases), a concurrenct batch-processing library, and a command-line tool for getting query results as JSON.
+Blaster is a tool for querying servers from the Valve Master Server List. There are three components: a set of libraries for querying Valve protocols (which have many edge cases), a concurrent batch-processing library, and a command-line tool for getting query results as JSON.
 
-Valve's master server has a rate limit of about 15 queries per minute, and returns a batch of ~220 servers for each query. For a popular game, it can take a long time (around ten minutes) to retrieve its entire server list. Blaster will query individual game servers in the background to lessen the overall waiting time. At the moment it will process 20 servers in the background, concurrently. Go's scheduler is still weak so it's not recommended to use more.
+Valve's master server has a rate limit of about 15 queries per minute, and returns a batch of ~220 servers for each query. For a popular game, it can take a long time (around ten minutes) to retrieve its entire server list. Blaster will query individual game servers in the background to lessen the overall waiting time. By default it processes 20 servers concurrently; use `-j` to change this (more will introduce more timeouts).
 
-Windows binaries are available for convenience under the Releases page on GitHub (https://github.com/alliedmodders/blaster/releases). See below for building Blaster on other systems.
+This is a fork of [alliedmodders/blaster](https://github.com/alliedmodders/blaster). It adds support for servers that send several A2S_INFO challenges in a row, A2S_PLAYER queries, and hardened A2S_RULES parsing.
 
 Usage
 -----
@@ -42,22 +42,25 @@ $ blaster -appids 2450 -norules -format=list
 Building
 --------
 
-1. Make sure you have Golang installed, (see: http://golang.org/)
-2. Make sure your Go environment is set up. Example:
+You will need Go 1.27+ installed (see: https://go.dev/doc/install).
 
-        export GOROOT=~/tools/go
-        export GOPATH=~/go
-        export PATH="$PATH:$GOROOT/bin:$GOPATH/bin"
+```bash
+go install github.com/nikooo777/blaster@latest
+```
 
-3. Get the source code and its dependencies:
+Or build from source:
 
-        go get github.com/alliedmodders/blaster
+```bash
+git clone https://github.com/nikooo777/blaster.git
+cd blaster
+go build
+```
 
-4. Build:
+The query libraries can also be used on their own:
 
-        go install
-
-5. The `blaster` binary wll be in `$GOPATH/bin/`.
+```go
+import "github.com/nikooo777/blaster/valve"
+```
 
 Resources
 ---------

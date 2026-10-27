@@ -10,8 +10,8 @@ import (
 	"net"
 	"os"
 
-	"github.com/alliedmodders/blaster/batch"
-	"github.com/alliedmodders/blaster/valve"
+	"github.com/nikooo777/blaster/batch"
+	"github.com/nikooo777/blaster/valve"
 )
 
 type ServerCallback func(server *Server)
@@ -56,7 +56,7 @@ func queryMaster(db *Database, game_id int64, callback ServerCallback) {
 		panic("unknown game_id")
 	}
 
-	bp := batch.NewBatchProcessor(func(item interface{}) {
+	bp := batch.NewBatchProcessor(func(item any) {
 		server, err := queryServer(item.(*net.TCPAddr))
 		if server == nil {
 			if err != nil {

@@ -12,7 +12,6 @@ import (
 	"time"
 )
 
-const kMaxFilterLength = 190
 const kDefaultMasterTimeout = time.Minute * 5
 
 var ErrBadResponseHeader = fmt.Errorf("bad response header")
@@ -115,7 +114,7 @@ func (this *MasterServerQuerier) tryQuery(callback MasterQueryCallback, filters 
 	}
 
 	// Sanity check the header.
-	if len(packet) < 6 || bytes.Compare(packet[0:6], kMasterResponseHeader) != 0 {
+	if len(packet) < 6 || !bytes.Equal(packet[0:6], kMasterResponseHeader) {
 		return ErrBadResponseHeader
 	}
 
@@ -136,7 +135,7 @@ func (this *MasterServerQuerier) tryQuery(callback MasterQueryCallback, filters 
 		}
 
 		servers := ServerList{}
-		for i := 0; i < serverCount; i++ {
+		for range serverCount {
 			ip, err = reader.ReadIPv4()
 			if err != nil {
 				return err

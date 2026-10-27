@@ -221,7 +221,7 @@ func (this *UdpSocket) enforceRateLimit() {
 		return
 	}
 
-	wait := this.next.Sub(time.Now())
+	wait := time.Until(this.next)
 	if wait > 0 {
 		time.Sleep(wait)
 	}

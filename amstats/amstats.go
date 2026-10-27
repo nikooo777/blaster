@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alliedmodders/blaster/valve"
 	"github.com/kylelemons/go-gypsy/yaml"
+	"github.com/nikooo777/blaster/valve"
 )
 
 var kTimeout time.Duration = time.Second * 3

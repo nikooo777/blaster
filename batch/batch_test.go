@@ -17,15 +17,15 @@ type MyBatch struct {
 func (this *MyBatch) Len() int {
 	return 10
 }
-func (this *MyBatch) Item(index int) interface{} {
+func (this *MyBatch) Item(index int) any {
 	return index + 1
 }
 
 func TestBasic(t *testing.T) {
 	var lock sync.Mutex
-	items := make([]interface{}, 0)
+	items := make([]any, 0)
 
-	bp := NewBatchProcessor(func(item interface{}) {
+	bp := NewBatchProcessor(func(item any) {
 		lock.Lock()
 		defer lock.Unlock()
 
@@ -54,7 +54,7 @@ func TestBasic(t *testing.T) {
 }
 
 func TestTerminate(t *testing.T) {
-	bp := NewBatchProcessor(func(item interface{}) {
+	bp := NewBatchProcessor(func(item any) {
 		time.Sleep(time.Second)
 	}, 10)
 

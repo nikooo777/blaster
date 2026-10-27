@@ -172,26 +172,22 @@ func (this *StatsCollector) finish() {
 			this.db.Insert(row)
 		case "stats_mods_addons":
 			row := &GameModAddonStat{
-				GameModStat: GameModStat{
-					BaseStat:    stat.BaseStat,
-					StatsId:     this.global.Id,
-					ServerCount: stat.ServerCount,
-					ModId:       key.ModId,
-					ServerType:  key.Type,
-				},
-				ObjectId: key.AddonId,
+				BaseStat:    stat.BaseStat,
+				StatsId:     this.global.Id,
+				ServerCount: stat.ServerCount,
+				ModId:       key.ModId,
+				ServerType:  key.Type,
+				ObjectId:    key.AddonId,
 			}
 			this.db.Insert(row)
 		case "stats_mods_values":
 			row := &GameModValueStat{
-				GameModStat: GameModStat{
-					BaseStat:    stat.BaseStat,
-					StatsId:     this.global.Id,
-					ServerCount: stat.ServerCount,
-					ModId:       key.ModId,
-					ServerType:  key.Type,
-				},
-				ObjectId: key.ValueId,
+				BaseStat:    stat.BaseStat,
+				StatsId:     this.global.Id,
+				ServerCount: stat.ServerCount,
+				ModId:       key.ModId,
+				ServerType:  key.Type,
+				ObjectId:    key.ValueId,
 			}
 			this.db.Insert(row)
 		}

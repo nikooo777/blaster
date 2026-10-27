@@ -13,14 +13,13 @@ import (
 	"io"
 	"net"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	batch "github.com/alliedmodders/blaster/batch"
-	valve "github.com/alliedmodders/blaster/valve"
+	batch "github.com/nikooo777/blaster/batch"
+	valve "github.com/nikooo777/blaster/valve"
 )
 
 var (
@@ -70,7 +69,7 @@ type ServerObject struct {
 	Rules map[string]string `json:"rules"`
 }
 
-func addJson(hostAndPort string, obj interface{}) {
+func addJson(hostAndPort string, obj any) {
 	buf, err := json.Marshal(obj)
 	if err != nil {
 		panic(err)
@@ -161,13 +160,13 @@ func main() {
 		case "hl2":
 			appids = append(appids, valve.HL2Apps...)
 		default:
-			fmt.Fprintf(os.Stderr, "Unrecognized game: %s", *flag_game)
+			fmt.Fprintf(os.Stderr, "Unrecognized game: %s\n", *flag_game)
 			os.Exit(1)
 		}
 	}
 
 	if *flag_appids != "" {
-		for _, part := range strings.Split(*flag_appids, ",") {
+		for part := range strings.SplitSeq(*flag_appids, ",") {
 			appid, err := strconv.Atoi(part)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "\"%s\" is not a valid AppID\n", part)
@@ -186,12 +185,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	runtime.GOMAXPROCS(runtime.NumCPU())
-
 	// Create a connection to the master server.
 	master, err := valve.NewMasterServerQuerier(*flag_master)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not query master: %s", err.Error())
+		fmt.Fprintf(os.Stderr, "Could not query master: %s\n", err.Error())
+		os.Exit(1)
 	}
 	defer master.Close()
 
@@ -200,7 +198,7 @@ func main() {
 
 	// Initialize our batch processor, which will receive servers and query them
 	// concurrently.
-	bp := batch.NewBatchProcessor(func(item interface{}) {
+	bp := batch.NewBatchProcessor(func(item any) {
 		addr := item.(*net.TCPAddr)
 		query, err := valve.NewServerQuerier(addr.String(), *flag_timeout)
 		if err != nil {
